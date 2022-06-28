@@ -43,6 +43,9 @@ var invalidCheckPeriod uint
 
 func NewRootCmd() (*cobra.Command, params.EncodingConfig) {
 	encodingConfig := app.MakeEncodingConfig()
+
+	setConfig()
+
 	initClientCtx := client.Context{}.
 		WithCodec(encodingConfig.Marshaler).
 		WithInterfaceRegistry(encodingConfig.InterfaceRegistry).
@@ -60,7 +63,16 @@ func NewRootCmd() (*cobra.Command, params.EncodingConfig) {
 		Use:   "persistenceCore",
 		Short: "Persistence Hub Node Daemon (server)",
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
-			initClientCtx, err := config.ReadFromClientConfig(initClientCtx)
+			// set the default command outputs
+			cmd.SetOut(cmd.OutOrStdout())
+			cmd.SetErr(cmd.ErrOrStderr())
+
+			initClientCtx, err := client.ReadPersistentCommandFlags(initClientCtx, cmd.Flags())
+			if err != nil {
+				return err
+			}
+
+			initClientCtx, err = config.ReadFromClientConfig(initClientCtx)
 			if err != nil {
 				return err
 			}
@@ -92,8 +104,6 @@ func setConfig() {
 }
 
 func initRootCmd(rootCmd *cobra.Command, encodingConfig params.EncodingConfig) {
-	setConfig()
-
 	rootCmd.AddCommand(
 		genutilcli.InitCmd(app.ModuleBasics, app.DefaultNodeHome),
 		genutilcli.CollectGenTxsCmd(bankTypes.GenesisBalancesIterator{}, app.DefaultNodeHome),
@@ -131,6 +141,7 @@ func initRootCmd(rootCmd *cobra.Command, encodingConfig params.EncodingConfig) {
 
 func addModuleInitFlags(startCmd *cobra.Command) {
 	crisis.AddModuleInitFlags(startCmd)
+	wasm.AddModuleInitFlags(startCmd)
 }
 
 func queryCommand() *cobra.Command {

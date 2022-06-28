@@ -82,7 +82,8 @@ import (
 	upgradeKeeper "github.com/cosmos/cosmos-sdk/x/upgrade/keeper"
 	upgradeTypes "github.com/cosmos/cosmos-sdk/x/upgrade/types"
 	ica "github.com/cosmos/ibc-go/v3/modules/apps/27-interchain-accounts"
-	icaControllerTypes "github.com/cosmos/ibc-go/v3/modules/apps/27-interchain-accounts/controller/types"
+
+	//icaControllerTypes "github.com/cosmos/ibc-go/v3/modules/apps/27-interchain-accounts/controller/types"
 	icaHost "github.com/cosmos/ibc-go/v3/modules/apps/27-interchain-accounts/host"
 	icaHostKeeper "github.com/cosmos/ibc-go/v3/modules/apps/27-interchain-accounts/host/keeper"
 	icaHostTypes "github.com/cosmos/ibc-go/v3/modules/apps/27-interchain-accounts/host/types"
@@ -94,12 +95,14 @@ import (
 	ibcCoreClient "github.com/cosmos/ibc-go/v3/modules/core/02-client"
 	ibcClient "github.com/cosmos/ibc-go/v3/modules/core/02-client/client"
 	ibcClientTypes "github.com/cosmos/ibc-go/v3/modules/core/02-client/types"
-	ibcConnectionTypes "github.com/cosmos/ibc-go/v3/modules/core/03-connection/types"
+
+	//ibcConnectionTypes "github.com/cosmos/ibc-go/v3/modules/core/03-connection/types"
+	"github.com/CosmWasm/wasmd/x/wasm"
 	ibcTypes "github.com/cosmos/ibc-go/v3/modules/core/05-port/types"
 	ibcHost "github.com/cosmos/ibc-go/v3/modules/core/24-host"
 	ibcKeeper "github.com/cosmos/ibc-go/v3/modules/core/keeper"
-	"github.com/CosmWasm/wasmd/x/wasm"
-	wasmTypes "github.com/CosmWasm/wasmd/x/wasm/types"
+
+	//wasmTypes "github.com/CosmWasm/wasmd/x/wasm/types"
 	wasmClient "github.com/CosmWasm/wasmd/x/wasm/client"
 	wasmKeeper "github.com/CosmWasm/wasmd/x/wasm/keeper"
 	"github.com/gogo/protobuf/grpc"
@@ -122,7 +125,7 @@ var DefaultNodeHome string
 var (
 	// ProposalsEnabled is "true" and EnabledSpecificProposals is "", then enable all x/wasm proposals.
 	// ProposalsEnabled is not "true" and EnabledSpecificProposals is "", then disable all x/wasm proposals.
-	ProposalsEnabled = "true"
+	ProposalsEnabled = "false"
 	// EnableSpecificProposals if set to non-empty string it must be comma-separated list of values that are all a subset
 	// of "EnableAllProposals" (takes precedence over ProposalsEnabled)
 	// https://github.com/CosmWasm/wasmd/blob/02a54d33ff2c064f3539ae12d75d027d9c665f05/x/wasm/internal/types/proposal.go#L28-L34
@@ -311,6 +314,22 @@ func NewApplication(
 	scopedWasmKeeper := app.CapabilityKeeper.ScopeToModule(wasm.ModuleName)
 	app.CapabilityKeeper.Seal()
 
+	app.CrisisKeeper = crisisKeeper.NewKeeper(
+		app.GetSubspace(crisisTypes.ModuleName),
+		invCheckPeriod,
+		app.BankKeeper,
+		authTypes.FeeCollectorName,
+	)
+	app.UpgradeKeeper = upgradeKeeper.NewKeeper(
+		skipUpgradeHeights,
+		keys[upgradeTypes.StoreKey],
+		applicationCodec,
+		home,
+		app.BaseApp,
+	)
+
+	app.setupUpgradeStoreLoaders()
+
 	app.AccountKeeper = authKeeper.NewAccountKeeper(
 		applicationCodec,
 		keys[authTypes.StoreKey],
@@ -382,19 +401,6 @@ func NewApplication(
 		&stakingKeeper,
 		app.GetSubspace(slashingTypes.ModuleName),
 	)
-	app.CrisisKeeper = crisisKeeper.NewKeeper(
-		app.GetSubspace(crisisTypes.ModuleName),
-		invCheckPeriod,
-		app.BankKeeper,
-		authTypes.FeeCollectorName,
-	)
-	app.UpgradeKeeper = upgradeKeeper.NewKeeper(
-		skipUpgradeHeights,
-		keys[upgradeTypes.StoreKey],
-		applicationCodec,
-		home,
-		app.BaseApp,
-	)
 
 	app.HalvingKeeper = halving.NewKeeper(
 		keys[halving.StoreKey],
@@ -451,7 +457,8 @@ func NewApplication(
 	)
 	app.EvidenceKeeper = *evidenceKeeper
 
-	wasmDir := filepath.Join(home, "wasm")
+	//wasmDir := filepath.Join(home, "wasm")
+	wasmDir := "/tmp/trash/.persistenceCore/wasm"
 	wasmConfig, err := wasm.ReadWasmConfig(applicationOptions)
 	if err != nil {
 		panic(fmt.Sprintf("error while reading wasm config: %s", err))
@@ -530,13 +537,13 @@ func NewApplication(
 		vesting.NewAppModule(app.AccountKeeper, app.BankKeeper),
 		bank.NewAppModule(applicationCodec, app.BankKeeper, app.AccountKeeper),
 		capability.NewAppModule(applicationCodec, *app.CapabilityKeeper),
-		crisis.NewAppModule(&app.CrisisKeeper, skipGenesisInvariants),
 		gov.NewAppModule(applicationCodec, app.GovKeeper, app.AccountKeeper, app.BankKeeper),
 		mint.NewAppModule(applicationCodec, app.MintKeeper, app.AccountKeeper),
 		slashing.NewAppModule(applicationCodec, app.SlashingKeeper, app.AccountKeeper, app.BankKeeper, app.StakingKeeper),
 		distribution.NewAppModule(applicationCodec, app.DistributionKeeper, app.AccountKeeper, app.BankKeeper, app.StakingKeeper),
 		staking.NewAppModule(applicationCodec, app.StakingKeeper, app.AccountKeeper, app.BankKeeper),
 		upgrade.NewAppModule(app.UpgradeKeeper),
+		wasm.NewAppModule(applicationCodec, &app.WasmKeeper, app.StakingKeeper, app.AccountKeeper, app.BankKeeper),
 		evidence.NewAppModule(app.EvidenceKeeper),
 		feegrantModule.NewAppModule(applicationCodec, app.AccountKeeper, app.BankKeeper, app.FeegrantKeeper, app.interfaceRegistry),
 		authzModule.NewAppModule(applicationCodec, app.AuthzKeeper, app.AccountKeeper, app.BankKeeper, app.interfaceRegistry),
@@ -545,7 +552,7 @@ func NewApplication(
 		halving.NewAppModule(applicationCodec, app.HalvingKeeper),
 		transferModule,
 		icaModule,
-		wasm.NewAppModule(applicationCodec, &app.WasmKeeper, app.StakingKeeper, app.AccountKeeper, app.BankKeeper),
+		crisis.NewAppModule(&app.CrisisKeeper, skipGenesisInvariants),
 	)
 
 	app.moduleManager.SetOrderBeginBlockers(
@@ -600,6 +607,8 @@ func NewApplication(
 	// NOTE: Capability module must occur first so that it can initialize any capabilities
 	// so that other modules that want to create or claim capabilities afterwards in InitChain
 	// can do so safely.
+	// NOTE: wasm module should be at the end as it can call other module functionality direct or via message dispatching during
+	// genesis phase. For example bank transfer, auth account check, staking, ...
 	app.moduleManager.SetOrderInitGenesis(
 		capabilityTypes.ModuleName,
 		bankTypes.ModuleName,
@@ -626,10 +635,13 @@ func NewApplication(
 
 	app.moduleManager.RegisterInvariants(&app.CrisisKeeper)
 	app.moduleManager.RegisterRoutes(app.BaseApp.Router(), app.BaseApp.QueryRouter(), encodingConfiguration.Amino)
+	
 	app.configurator = module.NewConfigurator(app.applicationCodec, app.BaseApp.MsgServiceRouter(), app.BaseApp.GRPCQueryRouter())
 	app.moduleManager.RegisterServices(app.configurator)
 
-	simulationManager := module.NewSimulationManager(
+	app.setupUpgradeHandlers(icaModule)
+
+	app.simulationManager = module.NewSimulationManager(
 		auth.NewAppModule(applicationCodec, app.AccountKeeper, authSimulation.RandomGenesisAccounts),
 		bank.NewAppModule(applicationCodec, app.BankKeeper, app.AccountKeeper),
 		capability.NewAppModule(applicationCodec, *app.CapabilityKeeper),
@@ -646,8 +658,7 @@ func NewApplication(
 		transferModule,
 	)
 
-	simulationManager.RegisterStoreDecoders()
-	app.simulationManager = simulationManager
+	app.simulationManager.RegisterStoreDecoders()
 
 	app.BaseApp.MountKVStores(keys)
 	app.BaseApp.MountTransientStores(transientStoreKeys)
@@ -688,19 +699,33 @@ func NewApplication(
 		}
 	}
 
+	app.ScopedIBCKeeper = scopedIBCKeeper
+	app.ScopedTransferKeeper = scopedTransferKeeper
+	app.ScopedICAHostKeeper = scopedICAHostKeeper
+	app.ScopedWasmKeeper = scopedWasmKeeper
+
+	if loadLatest {
+		if err := app.BaseApp.LoadLatestVersion(); err != nil {
+			tendermintOS.Exit(err.Error())
+		}
+		ctx := app.BaseApp.NewUncachedContext(true, tendermintProto.Header{})
+
+		// Initialize pinned codes in wasmvm as they are not persisted there
+		if err := app.WasmKeeper.InitializePinnedCodes(ctx); err != nil {
+			tendermintOS.Exit(fmt.Sprintf("failed initialize pinned codes %s", err))
+		}
+	}
+
+	return app
+}
+
+func (app *Application) setupUpgradeHandlers(icaModule ica.AppModule) {
 	app.UpgradeKeeper.SetUpgradeHandler(
 		UpgradeName,
 		func(ctx sdk.Context, _ upgradeTypes.Plan, fromVM module.VersionMap) (module.VersionMap, error) {
-			// Since we provide custom DefaultGenesis (privileges StoreCode) in
-			// app/genesis.go rather than the wasm module, we need to set the params
-			// here when migrating (is it is not customized).
-			params := wasmTypes.Params{
-				CodeUploadAccess:             wasmTypes.AllowNobody,
-				InstantiateDefaultPermission: wasmTypes.AccessTypeEverybody,
-			}
-			app.WasmKeeper.SetParams(ctx, params)
-
+			/*
 			app.IBCKeeper.ConnectionKeeper.SetParams(ctx, ibcConnectionTypes.DefaultParams())
+			
 			fromVM[icaTypes.ModuleName] = icaModule.ConsensusVersion()
 			// create ICS27 Controller submodule params
 			controllerParams := icaControllerTypes.Params{}
@@ -735,16 +760,39 @@ func NewApplication(
 			ctx.Logger().Info("start to init interchainaccount module...")
 			// initialize ICS27 module
 			icaModule.InitModule(ctx, controllerParams, hostParams)
-
+			*/
 			ctx.Logger().Info("start to run module migrations...")
 
-			// RunMigrations twice is just a way to make auth module's migrates after staking
-			return app.moduleManager.RunMigrations(ctx, app.configurator, fromVM)
+			// Set wasm old version to 1 if we want to call wasm's InitGenesis ourselves
+			// in this upgrade logic ourselves.
+			//
+			// vm[wasm.ModuleName] = wasm.ConsensusVersion
+			//
+			// Otherwise we run this, which will run wasm.InitGenesis(wasm.DefaultGenesis())
+			// and then override it after.
+			//fromVM[wasm.ModuleName] = wasm.AppModule{}.ConsensusVersion()
 
-			// 
+			newVM, err := app.moduleManager.RunMigrations(ctx, app.configurator, fromVM)
+			if err != nil {
+				return newVM, err
+			}
+			fmt.Println("New vm for upgrade:", newVM)
+			// Since we provide custom DefaultGenesis (privileges StoreCode) in
+			// app/genesis.go rather than the wasm module, we need to set the params
+			// here when migrating (is it is not customized).
+			params := app.WasmKeeper.GetParams(ctx)
+			fmt.Println("Params for wasm:", params)
+			//params.CodeUploadAccess = wasmTypes.AllowNobody
+			//app.WasmKeeper.SetParams(ctx, params)
+			
+			// RunMigrations twice is just a way to make auth module's migrates after staking
+			return newVM, nil
 		},
 	)
+}
 
+// setupUpgradeStoreLoaders configure store loader that checks if version == upgradeHeight and applies store upgrades
+func (app *Application) setupUpgradeStoreLoaders() {
 	upgradeInfo, err := app.UpgradeKeeper.ReadUpgradeInfoFromDisk()
 	if err != nil {
 		panic(fmt.Sprintf("failed to read upgrade info from disk %s", err))
@@ -752,30 +800,11 @@ func NewApplication(
 
 	if upgradeInfo.Name == UpgradeName && !app.UpgradeKeeper.IsSkipHeight(upgradeInfo.Height) {
 		storeUpgrades := storeTypes.StoreUpgrades{
-			Added: []string{wasm.ModuleName, icaHostTypes.StoreKey},
+			Added: []string{wasm.ModuleName, icaHostTypes.SubModuleName},
 		}
 
-		// configure store loader that checks if version == upgradeHeight and applies store upgrades
 		app.BaseApp.SetStoreLoader(upgradeTypes.UpgradeStoreLoader(upgradeInfo.Height, &storeUpgrades))
 	}
-
-	if loadLatest {
-		if err := app.BaseApp.LoadLatestVersion(); err != nil {
-			tendermintOS.Exit(err.Error())
-		}
-		ctx := app.BaseApp.NewUncachedContext(true, tendermintProto.Header{})
-
-		// Initialize pinned codes in wasmvm as they are not persisted there
-		if err := app.WasmKeeper.InitializePinnedCodes(ctx); err != nil {
-			tendermintOS.Exit(fmt.Sprintf("failed initialize pinned codes %s", err))
-		}
-	}
-	app.ScopedIBCKeeper = scopedIBCKeeper
-	app.ScopedTransferKeeper = scopedTransferKeeper
-	app.ScopedICAHostKeeper = scopedICAHostKeeper
-	app.ScopedWasmKeeper = scopedWasmKeeper
-
-	return app
 }
 
 func (app Application) ApplicationCodec() codec.Codec {
