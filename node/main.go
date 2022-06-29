@@ -6,6 +6,12 @@
 package main
 
 import (
+	"io"
+	"os"
+	"path/filepath"
+
+	"github.com/CosmWasm/wasmd/x/wasm"
+	wasmKeeper "github.com/CosmWasm/wasmd/x/wasm/keeper"
 	"github.com/cosmos/cosmos-sdk/baseapp"
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/config"
@@ -26,14 +32,12 @@ import (
 	"github.com/cosmos/cosmos-sdk/x/crisis"
 	"github.com/persistenceOne/persistenceCore/application"
 	"github.com/persistenceOne/persistenceCore/application/initialize"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cast"
 	"github.com/spf13/cobra"
 	tendermintClient "github.com/tendermint/tendermint/libs/cli"
 	"github.com/tendermint/tendermint/libs/log"
 	tendermintDB "github.com/tendermint/tm-db"
-	"io"
-	"os"
-	"path/filepath"
 )
 
 const flagInvalidCheckPeriod = "invalid-check-period"
@@ -149,6 +153,10 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
+		var wasmOpts []wasm.Option
+		if cast.ToBool(applicationOptions.Get("telemetry.enabled")) {
+			wasmOpts = append(wasmOpts, wasmKeeper.WithVMCacheMetrics(prometheus.DefaultRegisterer))
+		}
 		return application.NewApplication().Initialize(
 			application.Name,
 			encodingConfig,
@@ -160,7 +168,9 @@ func main() {
 			invalidCheckPeriod,
 			skipUpgradeHeights,
 			cast.ToString(applicationOptions.Get(flags.FlagHome)),
+			application.GetEnabledProposals(),
 			applicationOptions,
+			wasmOpts,
 			baseapp.SetPruning(pruningOpts),
 			baseapp.SetMinGasPrices(cast.ToString(applicationOptions.Get(server.FlagMinGasPrices))),
 			baseapp.SetHaltHeight(cast.ToUint64(applicationOptions.Get(server.FlagHaltHeight))),
@@ -184,7 +194,7 @@ func main() {
 		jailWhiteList []string,
 		applicationOptions serverTypes.AppOptions,
 	) (serverTypes.ExportedApp, error) {
-
+		var emptyWasmOpts []wasm.Option
 		if height != -1 {
 			genesisApplication := application.NewApplication().Initialize(
 				application.Name,
@@ -197,7 +207,9 @@ func main() {
 				uint(1),
 				map[int64]bool{},
 				"",
+				application.GetEnabledProposals(),
 				applicationOptions,
+				emptyWasmOpts,
 			)
 			err := genesisApplication.LoadHeight(height)
 			if err != nil {
@@ -217,7 +229,9 @@ func main() {
 			uint(1),
 			map[int64]bool{},
 			"",
+			application.GetEnabledProposals(),
 			applicationOptions,
+			emptyWasmOpts,
 		)
 		return genesisApplication.ExportAppStateAndValidators(forZeroHeight, jailWhiteList)
 

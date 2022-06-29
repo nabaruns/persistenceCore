@@ -6,6 +6,8 @@
 package application
 
 import (
+	"strings"
+
 	"github.com/cosmos/cosmos-sdk/types/module"
 	"github.com/cosmos/cosmos-sdk/x/auth"
 	authTypes "github.com/cosmos/cosmos-sdk/x/auth/types"
@@ -37,10 +39,39 @@ import (
 	ibcTransferTypes "github.com/cosmos/ibc-go/v3/modules/apps/transfer/types"
 	ibc "github.com/cosmos/ibc-go/v3/modules/core"
 	ibcClient "github.com/cosmos/ibc-go/v3/modules/core/02-client/client"
+	"github.com/CosmWasm/wasmd/x/wasm"
+	wasmClient "github.com/CosmWasm/wasmd/x/wasm/client"
 	"github.com/persistenceOne/persistenceCore/x/halving"
 )
 
 var DefaultNodeHome string
+
+var (
+	// ProposalsEnabled is "true" and EnabledSpecificProposals is "", then enable all x/wasm proposals.
+	// ProposalsEnabled is not "true" and EnabledSpecificProposals is "", then disable all x/wasm proposals.
+	ProposalsEnabled = "true"
+	// EnableSpecificProposals if set to non-empty string it must be comma-separated list of values that are all a subset
+	// of "EnableAllProposals" (takes precedence over ProposalsEnabled)
+	// https://github.com/CosmWasm/wasmd/blob/02a54d33ff2c064f3539ae12d75d027d9c665f05/x/wasm/internal/types/proposal.go#L28-L34
+	EnableSpecificProposals = ""
+)
+
+// GetEnabledProposals parses the ProposalsEnabled / EnableSpecificProposals values to
+// produce a list of enabled proposals to pass into wasmd app.
+func GetEnabledProposals() []wasm.ProposalType {
+	if EnableSpecificProposals == "" {
+		if ProposalsEnabled == "true" {
+			return wasm.EnableAllProposals
+		}
+		return wasm.DisableAllProposals
+	}
+	chunks := strings.Split(EnableSpecificProposals, ",")
+	proposals, err := wasm.ConvertToProposals(chunks)
+	if err != nil {
+		panic(err)
+	}
+	return proposals
+}
 
 var ModuleAccountPermissions = map[string][]string{
 	authTypes.FeeCollectorName:     nil,
@@ -51,6 +82,7 @@ var ModuleAccountPermissions = map[string][]string{
 	stakingTypes.NotBondedPoolName: {authTypes.Burner, authTypes.Staking},
 	govTypes.ModuleName:            {authTypes.Burner},
 	ibcTransferTypes.ModuleName:    {authTypes.Minter, authTypes.Burner},
+	wasm.ModuleName:                {authTypes.Burner},
 }
 
 var ModuleBasics = module.NewBasicManager(
@@ -62,12 +94,15 @@ var ModuleBasics = module.NewBasicManager(
 	mint.AppModuleBasic{},
 	distribution.AppModuleBasic{},
 	gov.NewAppModuleBasic(
-		paramsClient.ProposalHandler,
-		distributionClient.ProposalHandler,
-		upgradeClient.ProposalHandler,
-		upgradeClient.CancelProposalHandler,
-		ibcClient.UpdateClientProposalHandler,
-		ibcClient.UpgradeProposalHandler,
+		append(
+			wasmClient.ProposalHandlers,
+			paramsClient.ProposalHandler,
+			distributionClient.ProposalHandler,
+			upgradeClient.ProposalHandler,
+			upgradeClient.CancelProposalHandler,
+			ibcClient.UpdateClientProposalHandler,
+			ibcClient.UpgradeProposalHandler,
+		)...,
 	),
 	params.AppModuleBasic{},
 	crisis.AppModuleBasic{},
@@ -81,4 +116,5 @@ var ModuleBasics = module.NewBasicManager(
 	vesting.AppModuleBasic{},
 	halving.AppModuleBasic{},
 	ica.AppModuleBasic{},
+	wasm.AppModuleBasic{},
 )

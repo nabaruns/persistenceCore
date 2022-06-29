@@ -95,6 +95,9 @@ import (
 	ibcTypes "github.com/cosmos/ibc-go/v3/modules/core/05-port/types"
 	ibcHost "github.com/cosmos/ibc-go/v3/modules/core/24-host"
 	sdkIBCKeeper "github.com/cosmos/ibc-go/v3/modules/core/keeper"
+	"github.com/CosmWasm/wasmd/x/wasm"
+	wasmTypes "github.com/CosmWasm/wasmd/x/wasm/types"
+	wasmKeeper "github.com/CosmWasm/wasmd/x/wasm/keeper"
 	"github.com/gogo/protobuf/grpc"
 	"github.com/gorilla/mux"
 	applicationParams "github.com/persistenceOne/persistenceCore/application/params"
@@ -134,6 +137,8 @@ type Application struct {
 	FeegrantKeeper     sdkFeeGrantKeeper.Keeper
 	AuthzKeeper        sdkAuthzKeeper.Keeper
 	HalvingKeeper      halving.Keeper
+	WasmKeeper         wasm.Keeper
+
 	moduleManager *sdkTypesModule.Manager
 	configurator      sdkTypesModule.Configurator
 	simulationManager *sdkTypesModule.SimulationManager
@@ -142,6 +147,7 @@ type Application struct {
 	ScopedIBCKeeper      sdkCapabilityKeeper.ScopedKeeper
 	ScopedTransferKeeper sdkCapabilityKeeper.ScopedKeeper
 	ScopedICAHostKeeper  sdkCapabilityKeeper.ScopedKeeper
+	ScopedWasmKeeper     sdkCapabilityKeeper.ScopedKeeper
 }
 
 var (
@@ -413,7 +419,22 @@ func (application Application) RegisterTendermintService(clientCtx client.Contex
 func (application Application) LoadHeight(height int64) error {
 	return application.BaseApp.LoadVersion(height)
 }
-func (application Application) Initialize(applicationName string, encodingConfiguration applicationParams.EncodingConfiguration, moduleAccountPermissions map[string][]string, logger tendermintLog.Logger, db tendermintDB.DB, traceStore io.Writer, loadLatest bool, invCheckPeriod uint, skipUpgradeHeights map[int64]bool, home string, applicationOptions serverTypes.AppOptions, baseAppOptions ...func(*baseapp.BaseApp)) Application {
+func (application Application) Initialize(
+	applicationName string,
+	encodingConfiguration applicationParams.EncodingConfiguration,
+	moduleAccountPermissions map[string][]string,
+	logger tendermintLog.Logger,
+	db tendermintDB.DB,
+	traceStore io.Writer,
+	loadLatest bool,
+	invCheckPeriod uint,
+	skipUpgradeHeights map[int64]bool,
+	home string,
+	enabledProposals []wasm.ProposalType,
+	applicationOptions serverTypes.AppOptions,
+	wasmOpts []wasm.Option,
+	baseAppOptions ...func(*baseapp.BaseApp),
+) Application {
 	applicationCodec := encodingConfiguration.Marshaler
 	legacyAmino := encodingConfiguration.Amino
 	interfaceRegistry := encodingConfiguration.InterfaceRegistry
@@ -434,7 +455,7 @@ func (application Application) Initialize(applicationName string, encodingConfig
 		sdkMintTypes.StoreKey, sdkDistributionTypes.StoreKey, slashingTypes.StoreKey,
 		sdkGovTypes.StoreKey, paramsTypes.StoreKey, ibcHost.StoreKey, sdkUpgradeTypes.StoreKey,
 		sdkEvidenceTypes.StoreKey, ibcTransferTypes.StoreKey, sdkCapabilityTypes.StoreKey,
-		feegrant.StoreKey, sdkAuthzKeeper.StoreKey, icaHostTypes.StoreKey, halving.StoreKey,
+		feegrant.StoreKey, sdkAuthzKeeper.StoreKey, icaHostTypes.StoreKey, halving.StoreKey, wasm.StoreKey,
 	)
 
 	transientStoreKeys := sdkTypes.NewTransientStoreKeys(paramsTypes.TStoreKey)
@@ -458,6 +479,7 @@ func (application Application) Initialize(applicationName string, encodingConfig
 	scopedIBCKeeper := application.CapabilityKeeper.ScopeToModule(ibcHost.ModuleName)
 	scopedICAHostKeeper := application.CapabilityKeeper.ScopeToModule(icaHostTypes.SubModuleName)
 	scopedTransferKeeper := application.CapabilityKeeper.ScopeToModule(ibcTransferTypes.ModuleName)
+	scopedWasmKeeper := application.CapabilityKeeper.ScopeToModule(wasm.ModuleName)
 	application.CapabilityKeeper.Seal()
 
 	application.AccountKeeper = authKeeper.NewAccountKeeper(
@@ -564,30 +586,7 @@ func (application Application) Initialize(applicationName string, encodingConfig
 		scopedIBCKeeper,
 	)
 
-	govRouter := sdkGovTypes.NewRouter()
-	govRouter.AddRoute(
-		sdkGovTypes.RouterKey,
-		sdkGovTypes.ProposalHandler,
-	).AddRoute(
-		paramsProposal.RouterKey,
-		params.NewParamChangeProposalHandler(application.ParamsKeeper),
-	).AddRoute(
-		sdkDistributionTypes.RouterKey,
-		distribution.NewCommunityPoolSpendProposalHandler(application.DistributionKeeper),
-	).AddRoute(
-		sdkUpgradeTypes.RouterKey,
-		upgrade.NewSoftwareUpgradeProposalHandler(application.UpgradeKeeper),
-	).AddRoute(ibcClientTypes.RouterKey, ibcClient.NewClientProposalHandler(application.IBCKeeper.ClientKeeper))
 
-	application.GovKeeper = sdkGovKeeper.NewKeeper(
-		applicationCodec,
-		keys[sdkGovTypes.StoreKey],
-		application.ParamsKeeper.Subspace(sdkGovTypes.ModuleName).WithKeyTable(sdkGovTypes.ParamKeyTable()),
-		application.AccountKeeper,
-		application.BankKeeper,
-		&stakingKeeper,
-		govRouter,
-	)
 
 	application.TransferKeeper = ibcTransferKeeper.NewKeeper(
 		applicationCodec,
@@ -617,12 +616,6 @@ func (application Application) Initialize(applicationName string, encodingConfig
 	icaModule := ica.NewAppModule(nil, &application.ICAHostKeeper)
 	icaHostIBCModule := icaHost.NewIBCModule(application.ICAHostKeeper)
 
-	// Create static IBC router, add transfer route, then set and seal it
-	ibcRouter := ibcTypes.NewRouter()
-	ibcRouter.AddRoute(icaHostTypes.SubModuleName, icaHostIBCModule).
-		AddRoute(ibcTransferTypes.ModuleName, transferIBCModule)
-	application.IBCKeeper.SetRouter(ibcRouter)
-
 	evidenceKeeper := sdkEvidenceKeeper.NewKeeper(
 		applicationCodec,
 		keys[sdkEvidenceTypes.StoreKey],
@@ -630,6 +623,68 @@ func (application Application) Initialize(applicationName string, encodingConfig
 		application.SlashingKeeper,
 	)
 	application.EvidenceKeeper = *evidenceKeeper
+
+	wasmConfig, err := wasm.ReadWasmConfig(applicationOptions)
+	if err != nil {
+		panic(fmt.Sprintf("error while reading wasm config: %s", err))
+	}
+
+	// The last arguments can contain custom message handlers, and custom query handlers,
+	// if we want to allow any custom callbacks
+	supportedFeatures := "iterator,staking,stargate"
+	application.WasmKeeper = wasm.NewKeeper(
+		applicationCodec,
+		keys[wasm.StoreKey],
+		application.ParamsKeeper.Subspace(wasm.ModuleName),
+		application.AccountKeeper,
+		application.BankKeeper,
+		application.StakingKeeper,
+		application.DistributionKeeper,
+		application.IBCKeeper.ChannelKeeper,
+		&application.IBCKeeper.PortKeeper,
+		scopedWasmKeeper,
+		application.TransferKeeper,
+		application.MsgServiceRouter(),
+		application.GRPCQueryRouter(),
+		home,
+		wasmConfig,
+		supportedFeatures,
+		wasmOpts...,
+	)
+
+	// Create static IBC router, add transfer route, then set and seal it
+	ibcRouter := ibcTypes.NewRouter()
+	ibcRouter.AddRoute(icaHostTypes.SubModuleName, icaHostIBCModule).
+		AddRoute(ibcTransferTypes.ModuleName, transferIBCModule)
+	application.IBCKeeper.SetRouter(ibcRouter)
+
+	govRouter := sdkGovTypes.NewRouter()
+	govRouter.AddRoute(
+		sdkGovTypes.RouterKey,
+		sdkGovTypes.ProposalHandler,
+	).AddRoute(
+		paramsProposal.RouterKey,
+		params.NewParamChangeProposalHandler(application.ParamsKeeper),
+	).AddRoute(
+		sdkDistributionTypes.RouterKey,
+		distribution.NewCommunityPoolSpendProposalHandler(application.DistributionKeeper),
+	).AddRoute(
+		sdkUpgradeTypes.RouterKey,
+		upgrade.NewSoftwareUpgradeProposalHandler(application.UpgradeKeeper),
+	).AddRoute(ibcClientTypes.RouterKey, ibcClient.NewClientProposalHandler(application.IBCKeeper.ClientKeeper))
+	if len(enabledProposals) != 0 {
+		govRouter.AddRoute(wasm.RouterKey, wasm.NewWasmProposalHandler(application.WasmKeeper, enabledProposals))
+	}
+
+	application.GovKeeper = sdkGovKeeper.NewKeeper(
+		applicationCodec,
+		keys[sdkGovTypes.StoreKey],
+		application.ParamsKeeper.Subspace(sdkGovTypes.ModuleName).WithKeyTable(sdkGovTypes.ParamKeyTable()),
+		application.AccountKeeper,
+		application.BankKeeper,
+		&stakingKeeper,
+		govRouter,
+	)
 
 	/****  Module Options ****/
 	var skipGenesisInvariants = false
@@ -663,6 +718,7 @@ func (application Application) Initialize(applicationName string, encodingConfig
 		halving.NewAppModule(applicationCodec, application.HalvingKeeper),
 		transferModule,
 		icaModule,
+		wasm.NewAppModule(applicationCodec, &application.WasmKeeper, application.StakingKeeper, application.AccountKeeper, application.BankKeeper),
 	)
 
 	application.moduleManager.SetOrderBeginBlockers(
@@ -686,6 +742,7 @@ func (application Application) Initialize(applicationName string, encodingConfig
 		paramsTypes.ModuleName,
 		vestingTypes.ModuleName,
 		halving.ModuleName,
+		wasm.ModuleName,
 	)
 	application.moduleManager.SetOrderEndBlockers(
 		sdkCrisisTypes.ModuleName,
@@ -708,6 +765,7 @@ func (application Application) Initialize(applicationName string, encodingConfig
 		sdkUpgradeTypes.ModuleName,
 		vestingTypes.ModuleName,
 		halving.ModuleName,
+		wasm.ModuleName,
 	)
 
 	// NOTE: The genutils module must occur after staking so that pools are
@@ -736,6 +794,7 @@ func (application Application) Initialize(applicationName string, encodingConfig
 		sdkUpgradeTypes.ModuleName,
 		vestingTypes.ModuleName,
 		halving.ModuleName,
+		wasm.ModuleName,
 	)
 
 	application.moduleManager.RegisterInvariants(&application.CrisisKeeper)
@@ -777,6 +836,8 @@ func (application Application) Initialize(applicationName string, encodingConfig
 				SigGasConsumer:  ante.DefaultSigVerificationGasConsumer,
 			},
 			IBCKeeper: application.IBCKeeper,
+			WasmConfig:        &wasmConfig,
+			TXCounterStoreKey: keys[wasm.StoreKey],
 		},
 	)
 	if err != nil {
@@ -787,6 +848,18 @@ func (application Application) Initialize(applicationName string, encodingConfig
 	application.BaseApp.SetInitChainer(application.InitChainer)
 	application.BaseApp.SetBeginBlocker(application.moduleManager.BeginBlock)
 	application.BaseApp.SetEndBlocker(application.moduleManager.EndBlock)
+
+	// must be before Loading version
+	// requires the snapshot store to be created and registered as a BaseAppOption
+	// see cmd/wasmd/root.go: 206 - 214 approx
+	if manager := application.SnapshotManager(); manager != nil {
+		err := manager.RegisterExtensions(
+			wasmKeeper.NewWasmSnapshotter(application.CommitMultiStore(), &application.WasmKeeper),
+		)
+		if err != nil {
+			panic(fmt.Errorf("failed to register snapshot extension: %s", err))
+		}
+	}
 
 	application.UpgradeKeeper.SetUpgradeHandler(
 		UpgradeName,
@@ -830,8 +903,19 @@ func (application Application) Initialize(applicationName string, encodingConfig
 			ctx.Logger().Info("start to run module migrations...")
 
 			// RunMigrations twice is just a way to make auth module's migrates after staking
-			return application.moduleManager.RunMigrations(ctx, application.configurator, fromVM)
+			newVM, err := application.moduleManager.RunMigrations(ctx, application.configurator, fromVM)
+			if err != nil {
+				return nil, err
+			}
 
+			// Since we provide custom DefaultGenesis (privileges StoreCode) in
+			// app/genesis.go rather than the wasm module, we need to set the params
+			// here when migrating (is it is not customized).
+			params := application.WasmKeeper.GetParams(ctx)
+			params.CodeUploadAccess = wasmTypes.AllowNobody
+			application.WasmKeeper.SetParams(ctx, params)
+
+			return newVM, nil
 		},
 	)
 
@@ -842,7 +926,7 @@ func (application Application) Initialize(applicationName string, encodingConfig
 
 	if upgradeInfo.Name == UpgradeName && !application.UpgradeKeeper.IsSkipHeight(upgradeInfo.Height) {
 		storeUpgrades := storeTypes.StoreUpgrades{
-			Added: []string{authz.ModuleName, feegrant.ModuleName},
+			Added: []string{wasmTypes.ModuleName},
 		}
 
 		// configure store loader that checks if version == upgradeHeight and applies store upgrades
@@ -853,9 +937,17 @@ func (application Application) Initialize(applicationName string, encodingConfig
 		if err := application.BaseApp.LoadLatestVersion(); err != nil {
 			tendermintOS.Exit(err.Error())
 		}
+		ctx := application.BaseApp.NewUncachedContext(true, tendermintProto.Header{})
+
+		// Initialize pinned codes in wasmvm as they are not persisted there
+		if err := application.WasmKeeper.InitializePinnedCodes(ctx); err != nil {
+			tendermintOS.Exit(fmt.Sprintf("failed initialize pinned codes %s", err))
+		}
 	}
 	application.ScopedIBCKeeper = scopedIBCKeeper
 	application.ScopedTransferKeeper = scopedTransferKeeper
+	application.ScopedICAHostKeeper = scopedICAHostKeeper
+	application.ScopedWasmKeeper = scopedWasmKeeper
 
 	return application
 }

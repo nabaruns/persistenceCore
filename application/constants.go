@@ -14,6 +14,7 @@ const (
 	Bech32MainPrefix = "persistence"
 	UpgradeName      = "v3"
 	CoinType         = 750
+	Purpose 		 = 44
 
 	FullFundraiserPath = "44'/750'/0'/0/0"
 

@@ -85,10 +85,10 @@ endif
 
 build:
 ifeq (${OS},Windows_NT)
-	go build  ${BUILD_FLAGS} -o build/${GOOS}/${GOARCH}/persistenceCore.exe ./node
+	go build  ${BUILD_FLAGS} -o build/persistenceCore.exe ./node
 
 else
-	go build  ${BUILD_FLAGS} -o build/${GOOS}/${GOARCH}/persistenceCore ./node
+	go build  ${BUILD_FLAGS} -o build/persistenceCore ./node
 
 endif
 
